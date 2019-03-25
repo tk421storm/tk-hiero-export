@@ -73,51 +73,6 @@ class PhospheneWriteNode(nuke.UserDefinedNode):
 			
 		nuke.UserDefinedNode.__init__(self, self.phospheneWriteNode)
 		
-class PhospheneSlateNode(nuke.UserDefinedNode):
-	'''
-	an extension of the hiero node creation class, specifically for the phosphene slate node
-	'''
-	
-	def __init__(self, app, inputNode0=None, inputNodes=None, **keywords):
-				
-		#store for debug (available function setWarning)
-		self.app=app
-		
-		#if we hard code the string here, it'll lose a lot of the formating it needs
-		#better to keep it as-is in the python internal buffer by reading it directly from disk
-		
-		self.phospheneSlateFile=join(configRoot, "phosphene", "nuke", "phospheneSlateNode", "slateNode.nk")
-		print "loading phosphene slate node from "+str(self.phospheneSlateFile)
-		if not exists(self.phospheneSlateFile):
-			print "ERROR - cannot locate file, node will be empty"
-			nuke.UserDefinedNode.__init__(self, "Group {\n xpos 900\n ypos 1043\n}")
-			return
-		
-		with open(self.phospheneSlateFile, 'r') as myFile:
-			self.phospheneSlateNode=myFile.read()
-			
-		#trim off the header
-		self.phospheneSlateNode="Group {"+self.phospheneSlateNode.split("Group {")[1]
-		
-		#remove the inputs 0 line (seems to indicate node is not connected to anything)
-		if " inputs 0\n" in self.phospheneSlateNode:
-			self.phospheneSlateNode=self.phospheneSlateNode.replace(" inputs 0\n", "")
-			
-		#try removing the position as well
-		#find the first instances of coord lines
-		try:
-			xCoords=re.findall("(.xpos -?\\d\\d?\\d?.)", self.phospheneSlateNode, flags=re.DOTALL)[0]
-			yCoords=re.findall("(.ypos -?\\d\\d?\\d?.)", self.phospheneSlateNode, flags=re.DOTALL)[0]
-			
-			self.phospheneSlateNode=self.phospheneSlateNode.replace(xCoords, "")
-			self.phospheneSlateNode=self.phospheneSlateNode.replace(yCoords, "")
-		except:
-			pass
-			
-		nuke.UserDefinedNode.__init__(self, self.phospheneSlateNode)
-
-
-
 #
 #
 #
@@ -537,9 +492,9 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 
 		script.addNode(metadataNode)
 		
-		#add phosphene slate node
-		phospheneSlate=PhospheneSlateNode(self)
-		script.addNode(phospheneSlate)
+		#add phosphene slate node (depreciated, was coming in all screwy
+		#phospheneSlate=PhospheneSlateNode(self)
+		#script.addNode(phospheneSlate)
 
 		# add phosphene write node
 		phospheneWrite=PhospheneWriteNode(self)
