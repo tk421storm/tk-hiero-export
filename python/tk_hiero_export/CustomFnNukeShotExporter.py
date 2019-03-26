@@ -10,6 +10,7 @@ from os.path import dirname, realpath, exists, join, exists
 import os, math
 from pprint import pprint
 import re, copy, itertools
+from traceback import format_exc
 
 from PySide2 import(QtCore, QtGui, QtWidgets)
 
@@ -29,6 +30,43 @@ from base_hooks import HieroGetShot
 #get the location of this install, and the location of the sgtk config directory
 currentRoot=dirname(realpath(__file__))
 configRoot=join(dirname(dirname(dirname(dirname(dirname(dirname(currentRoot)))))), "config")
+
+class ErrorDialog(QtWidgets.QDialog):
+	#a simple dialog that prompts what the error recieved was
+	
+	def __init__(self, errorMessage, process, parent):
+		QtWidgets.QDialog.__init__(self, parent=parent)
+		
+		self.errorMessage=errorMessage
+		self.process=process
+		
+		layout=QtWidgets.QGridLayout()
+		self.messageBox=QtWidgets.QLabel(self.errorMessage)
+		
+		layout.addWidget(self.messageBox, 0, 0)
+		
+		tempWidget=QtWidgets.QWidget()
+		tempLayout=QtWidgets.QGridLayout()
+		
+		spacer=QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+		
+		
+		self.okButton=QtWidgets.QPushButton('OK')
+		self.okButton.clicked.connect(self.reject)
+		tempLayout.addItem(spacer, 0, 0)
+		tempLayout.addWidget(self.okButton, 0, 1)
+		tempLayout.addItem(spacer, 0, 2)
+		
+		tempLayout.setColumnStretch(0, 1)
+		tempLayout.setColumnStretch(1, 0)
+		tempLayout.setColumnStretch(2, 1)
+		
+		tempWidget.setLayout(tempLayout)
+		layout.addWidget(tempWidget, 1, 0)
+		
+		self.setLayout(layout)
+		self.setWindowTitle('Errors occured during '+str(process))
+		self.setWindowModality(QtCore.Qt.ApplicationModal)
 
 class PhospheneWriteNode(nuke.UserDefinedNode):
 	'''
@@ -144,14 +182,26 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		path = path.replace("\\", "/")
 		
 		# first use sg-derived info before defaulting to hiero values
-		shot = self.app.execute_hook(
-				"hook_get_shot",
-				task=None,
-				item=self._item,
-				data=self.app.preprocess_data,
-				upload_thumbnail=False,
-				base_class=HieroGetShot,
-			)
+		try:
+			shot = self.app.execute_hook(
+					"hook_get_shot",
+					task=None,
+					item=self._item,
+					data=self.app.preprocess_data,
+					upload_thumbnail=False,
+					base_class=HieroGetShot,
+				)
+		except:
+			#don't just fail silently, prompt the user what happened
+			errorMessage=format_exc().split('\n')[-2]
+			process="export"
+			mainWindow=hiero.ui.mainWindow()
+			errorDialog=ErrorDialog(errorMessage, process, parent=mainWindow)
+			errorDialog.exec_()
+			
+			#re-raise to stop the process
+			raise
+			
 		
 		#it's amazing how complicated the resolver class is to do this
 		for fieldName in shot:
