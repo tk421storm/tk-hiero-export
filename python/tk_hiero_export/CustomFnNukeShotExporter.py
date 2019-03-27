@@ -207,6 +207,9 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		for fieldName in shot:
 			if "{"+fieldName.lower()+"}" in path:
 				path=path.replace("{"+fieldName.lower()+"}", shot[fieldName])
+			#also check for the field without the case change
+			elif "{"+fieldName+"}" in path:
+				path=path.replace("{"+fieldName+"}", shot[fieldName])
 
 	
 		try:
