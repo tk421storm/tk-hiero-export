@@ -401,8 +401,13 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		# When building a collated sequence, everything is offset by 1000
 		# This gives head room for shots which may go negative when transposed to a
 		# custom start frame. This offset is negated during script generation.
-		#offset = -FnNukeShotExporter.NukeShotExporter.kCollatedSequenceFrameOffset if self._collate else 0
-		offset = 0
+		#
+		# The whole project's timeline settings are here! 
+		#
+		#
+		#offset = -FnNukeShotExporter.NukeShotExporter.kCollatedSequenceFrameOffset# if self._collate else 0
+		#by default, the timeline seems to start at 1000 (if _startFrame is 0, and is piped into offset, comp will start at 1000)
+		offset = self._startFrame-1000
 
 		# When exporting a sequence, everything must output to the same format,
 		# if it's set to plate format, use the sequence format. When collating,
