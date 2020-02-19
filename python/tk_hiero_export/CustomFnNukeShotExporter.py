@@ -6,26 +6,26 @@ monkey-patched nuke script exporter for hiero
 
 
 
-from os.path import dirname, realpath, exists, join, exists
+from os.path import dirname, realpath, join, exists
 import os, math
 from pprint import pprint
 import re, copy, itertools
 from traceback import format_exc
 
-from PySide2 import(QtCore, QtGui, QtWidgets)
+from PySide2 import (QtCore, QtGui, QtWidgets)
 
-import hiero #@UnresolvedImport
-from hiero.exporters import FnNukeShotExporter, FnNukeShotExporterUI #@UnresolvedImport
-import hiero.core.nuke as nuke #@UnresolvedImport
-from hiero.exporters.FnReformatHelpers import reformatNodeFromPreset #@UnresolvedImport
-from hiero.exporters.FnExportUtil import trackItemTimeCodeNodeStartFrame, TrackItemExportScriptWriter #@UnresolvedImport
-from hiero.exporters import FnShotExporter, FnExternalRender, FnScriptLayout #@UnresolvedImport
-from hiero.core import FnNukeHelpersV2, FnNukeHelpers, Clip, Keys, isVideoFileExtension #@UnresolvedImport
+import hiero
+from hiero.exporters import FnNukeShotExporter, FnNukeShotExporterUI
+import hiero.core.nuke as nuke
+from hiero.exporters.FnReformatHelpers import reformatNodeFromPreset
+from hiero.exporters.FnExportUtil import trackItemTimeCodeNodeStartFrame, TrackItemExportScriptWriter
+from hiero.exporters import FnShotExporter, FnExternalRender, FnScriptLayout
+from hiero.core import FnNukeHelpersV2, FnNukeHelpers, Clip, Keys, isVideoFileExtension
 
-from hiero.ui.nuke_bridge import FnNsFrameServer as postProcessor #@UnresolvedImport
+from hiero.ui.nuke_bridge import FnNsFrameServer as postProcessor
 
 from .base import ShotgunHieroObjectBase
-from base_hooks import HieroGetShot
+from base_hooks import HieroGetShot #@UnresolvedImport
 
 #get the location of this install, and the location of the sgtk config directory
 currentRoot=dirname(realpath(__file__))
