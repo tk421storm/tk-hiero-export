@@ -554,9 +554,9 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		#phospheneSlate=PhospheneSlateNode(self)
 		#script.addNode(phospheneSlate)
 
-		# add phosphene write node
-		phospheneWrite=PhospheneWriteNode(self)
-		script.addNode(phospheneWrite)
+		# add phosphene write node (depreciated, probably also screwy)
+		#phospheneWrite=PhospheneWriteNode(self)
+		#script.addNode(phospheneWrite)
 
 		# Create pre-comp nodes for external annotation scripts
 		annotationsNodes = self._createAnnotationsPreComps()
@@ -564,7 +564,7 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 			script.addNode(annotationsNodes)
 
 		scriptFilename = self.resolvedExportPath()
-		hiero.core.log.debug( "Writing Script to: %s", scriptFilename )
+		hiero.core.log.debug( "Creating version 0 script at: %s", scriptFilename )
 
 		# Call callback before writing script to disk (see _beforeNukeScriptWrite definition below)
 		self._beforeNukeScriptWrite(script)
@@ -574,20 +574,88 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		# Layout the script
 		FnScriptLayout.scriptLayout(script)
 
-		#only write to the disk if the destination script doesn't exist (don't overwrite)
-		if not exists(scriptFilename):
-			script.writeToDisk(scriptFilename)
-			#if postProcessScript has been set to false, don't post process
-			#it will be done on a background thread by create comp
-			#needs to be done as part of export task so that information
-			#is added in hiero workflow
-			if self._preset.properties().get("postProcessScript", True):
-				error = postProcessor.postProcessScript(scriptFilename)
-				if error:
-					hiero.core.log.error( "Script Post Processor: An error has occurred while preparing script:\n%s", scriptFilename )
+		#instead of writing to the final output, we'll output to another location
+		#this way, we can re-run this process if the output fails for some reason
+		#without actually afecting the final v0
+		#
+		#where the v0 script is expected, we'll create a simple "dummy" nuke script
+		#that includes python code to run the rest of the create v0 process when opened
+				
+		actualOutput=join(dirname(dirname(dirname(scriptFilename))),"hieroOutput.nk")
+		hiero.core.log.debug('Outputting hiero nodes to '+str(actualOutput))
+		
+		script.writeToDisk(actualOutput)
+		#if postProcessScript has been set to false, don't post process
+		#it will be done on a background thread by create comp
+		#needs to be done as part of export task so that information
+		#is added in hiero workflow
+		if self._preset.properties().get("postProcessScript", True):
+			error = postProcessor.postProcessScript(actualOutput)
+			if error:
+				hiero.core.log.error( "Script Post Processor: An error has occurred while preparing script:\n%s", actualOutput )
+				
+		#if we spit out a script with a pointless Group in it, remove it now
+		with open(actualOutput, 'r') as myFile:
+			lines=myFile.readlines()
 			
+		updated=False
+		while 'Group {\n' in lines:
+			i=0
+			start=None
+			end=None
+			for line in lines:
+				if start:
+					#check for end group
+					if line=="}\n":
+						end=i
+						break
+				if line=='Group {\n':
+					start=i					
+				i+=1
+				
+			if start and end:
+				updated=True
+				lines=lines[:start]+lines[end+1:]
+				
+		if updated:
+			with open(actualOutput, 'w') as myFile:
+				myFile.writelines(lines)
+				
+		#now we'll create our dummy nuke script at the actual location for the v0
+		
+		#start with the important info from the root of the hieroOutput script
+		rootLines=[]
+		for line in lines:
+			rootLines.append(line)
+			if line=="}\n":
+				break
+				
+		#check the lines for the onScriptLoad section (with weird mov imports) - replace it
+		newOnScript=''' onScriptLoad "setupVersion0(prompt=False)"\n'''
+		startLine=0
+		i=0
+		for line in rootLines:
+			if ' onScriptLoad' in line:
+				startLine=i
+				break
+			i+=1
+			
+		endLine=0
+		i=0
+		for line in rootLines[startLine+1:]:
+			if '"' in line:
+				endLine=i
+				break
+			i+=1
+		
+		rootLines=['version 11.2 v5\n']+rootLines[:startLine]+[newOnScript]+rootLines[startLine+endLine+2:]
+		
+		if not exists(scriptFilename):
+			hiero.core.log.debug( "Outputting starting point v0 at : %s", scriptFilename )
+			with open(scriptFilename, 'w') as myFile:
+				myFile.writelines(rootLines)
 		else:
-			hiero.core.log.error('Not overwriting script that currently exists!')
+			hiero.core.log.debug( "not overwriting v0 at : %s", scriptFilename )
 			
 		# Nothing left to do, return False. <- of course this makes sense to do!
 		return False
