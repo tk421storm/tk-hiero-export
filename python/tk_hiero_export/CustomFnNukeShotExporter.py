@@ -8,19 +8,20 @@ monkey-patched nuke script exporter for hiero
 
 from os.path import dirname, realpath, join, exists
 import os, math
-from pprint import pprint
 import re, copy, itertools
 from traceback import format_exc
 
 from PySide2 import (QtCore, QtGui, QtWidgets)
 
 import hiero
-from hiero.exporters import FnNukeShotExporter, FnNukeShotExporterUI
+from hiero.exporters import FnNukeShotExporter
 import hiero.core.nuke as nuke
 from hiero.exporters.FnReformatHelpers import reformatNodeFromPreset
 from hiero.exporters.FnExportUtil import trackItemTimeCodeNodeStartFrame, TrackItemExportScriptWriter
 from hiero.exporters import FnShotExporter, FnExternalRender, FnScriptLayout
-from hiero.core import FnNukeHelpersV2, FnNukeHelpers, Clip, Keys, isVideoFileExtension
+from hiero.core import FnNukeHelpersV2, FnNukeHelpers, Clip, Keys, isVideoFileExtension #@UnresolvedImport
+from hiero.core.FnCompSourceInfo import (CompSourceInfo,
+                                isNukeScript)
 
 from hiero.ui.nuke_bridge import FnNsFrameServer as postProcessor
 
@@ -67,49 +68,6 @@ class ErrorDialog(QtWidgets.QDialog):
 		self.setLayout(layout)
 		self.setWindowTitle('Errors occured during '+str(process))
 		self.setWindowModality(QtCore.Qt.ApplicationModal)
-
-class PhospheneWriteNode(nuke.UserDefinedNode):
-	'''
-	an extension of the hiero node creation class, specifically for the phosphene write node
-	'''
-	
-	def __init__(self, app, inputNode0=None, inputNodes=None, **keywords):
-				
-		#store for debug (available function setWarning)
-		self.app=app
-		
-		#if we hard code the string here, it'll lose a lot of the formating it needs
-		#better to keep it as-is in the python internal buffer by reading it directly from disk
-		
-		self.phospheneWriteFile=join(configRoot, "phosphene", "nuke", "phospheneWriteNode", "writeNode.nk")
-		print "loading phosphene write node from "+str(self.phospheneWriteFile)
-		if not exists(self.phospheneWriteFile):
-			print "ERROR - cannot locate file, node will be empty"
-			nuke.UserDefinedNode.__init__(self, "Group {\n xpos 900\n ypos 1043\n}")
-			return
-		
-		with open(self.phospheneWriteFile, 'r') as myFile:
-			self.phospheneWriteNode=myFile.read()
-			
-		#trim off the header
-		self.phospheneWriteNode="Group {"+self.phospheneWriteNode.split("Group {")[1]
-		
-		#remove the inputs 0 line (seems to indicate node is not connected to anything
-		if " inputs 0\n" in self.phospheneWriteNode:
-			self.phospheneWriteNode=self.phospheneWriteNode.replace(" inputs 0\n", "")
-			
-		#try removing the position as well
-		#find the first instances of coord lines
-		try:
-			xCoords=re.findall("(.xpos -?\\d\\d?\\d?.)", self.phospheneWriteNode, flags=re.DOTALL)[0]
-			yCoords=re.findall("(.ypos -?\\d\\d?\\d?.)", self.phospheneWriteNode, flags=re.DOTALL)[0]
-			
-			self.phospheneWriteNode=self.phospheneWriteNode.replace(xCoords, "")
-			self.phospheneWriteNode=self.phospheneWriteNode.replace(yCoords, "")
-		except:
-			pass
-			
-		nuke.UserDefinedNode.__init__(self, self.phospheneWriteNode)
 		
 #
 #
@@ -193,7 +151,9 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 				)
 		except:
 			#don't just fail silently, prompt the user what happened
-			errorMessage=format_exc().split('\n')[-2]
+			exception=format_exc()
+			#print exception
+			errorMessage=exception.split('\n')[-2]
 			process="export"
 			mainWindow=hiero.ui.mainWindow()
 			errorDialog=ErrorDialog(errorMessage, process, parent=mainWindow)
@@ -237,9 +197,9 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 	def resolvedExportPath(self):
 		"""resolvedExportPath()
 		returns the output path with and tokens resolved"""
-		print "attempting to resolve path "+str(self._exportPath)+" with item "+str(self._item)
+		#print "attempting to resolve path "+str(self._exportPath)+" with item "+str(self._item)
 		outputPath=self.resolvePath(self._exportPath)
-		print "resolved to: "+str(outputPath)
+		#print "resolved to: "+str(outputPath)
 		return outputPath
 	
 	def _buildCollatedSequence(self):
@@ -328,7 +288,7 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 					localWriteNodeGroup.append( nuke.SetNode(stackId, 0) )
 
 				try:
-					trackItem = self._item if isinstance(self._item, hiero.core.TrackItem) else None
+					trackItem = self._item if isinstance(self._item, hiero.core.TrackItem) else None #@UndefinedVariable
 					reformatNode = reformatNodeFromPreset(writePreset, self._parentSequence.format(), trackItem=trackItem)
 					if reformatNode:
 						localWriteNodeGroup.append(reformatNode)
@@ -408,6 +368,14 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		#offset = -FnNukeShotExporter.NukeShotExporter.kCollatedSequenceFrameOffset# if self._collate else 0
 		#by default, the timeline seems to start at 1000 (if _startFrame is 0, and is piped into offset, comp will start at 1000)
 		offset = self._startFrame-1000
+		
+		# Get a set of master tracks from the master track item and the ones for
+		# other views on different tracks
+		masterTracks = set()
+		if self._masterTrackItemCopy:
+			masterTracks.add(self._masterTrackItemCopy.parent())
+			for trackItem in self._trackItemsForViews:
+				masterTracks.add(trackItem.parent())
 
 		# When exporting a sequence, everything must output to the same format,
 		# if it's set to plate format, use the sequence format. When collating,
@@ -420,7 +388,8 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 																includeEffects=self.includeEffects(),
 																retimeMethod=self._preset.properties()["method"],
 																reformatMethod=reformatMethod,
-																additionalNodesCallback=self._buildAdditionalNodes)
+																additionalNodesCallback=self._buildAdditionalNodes,
+																views=self.views())
 		
 		sequenceWriter = CustomSequenceScriptWriter(self._sequence, scriptParams)
 		
@@ -428,7 +397,7 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 										offset=offset,
 										skipOffline=self._skipOffline,
 										disconnected=sequenceDisconnected,
-										 masterTrackItem=self._masterTrackItemCopy)
+										masterTracks=masterTracks)
 
 		script.popLayoutContext()
 
@@ -480,7 +449,7 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		#rootNode.setKnob("project_directory", os.path.split(self.resolvedExportPath())[0])
 		script.addNode(rootNode)
 
-		if isinstance(self._item, hiero.core.TrackItem):
+		if isinstance(self._item, hiero.core.TrackItem): #@UndefinedVariable
 			rootNode.addInputTextKnob("shot_guid", value=hiero.core.FnNukeHelpers._guidFromCopyTag(self._item),
 																tooltip="This is used to identify the master track item within the script",
 																visible=False)
@@ -531,7 +500,7 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		metadataNode.addMetadataFromTags( self._sequence.tags() )
 		
 		# Apply timeline offset to nuke output
-		if isinstance(self._item, hiero.core.TrackItem):
+		if isinstance(self._item, hiero.core.TrackItem): #@UndefinedVariable
 			if self._cutHandles is None:
 				# Whole clip, so timecode start frame is first frame of clip
 				timeCodeNodeStartFrame = unclampedStart
@@ -549,14 +518,6 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		metadataNode.addMetadata([("input/frame_rate",framerate.toFloat())])
 
 		script.addNode(metadataNode)
-		
-		#add phosphene slate node (depreciated, was coming in all screwy
-		#phospheneSlate=PhospheneSlateNode(self)
-		#script.addNode(phospheneSlate)
-
-		# add phosphene write node (depreciated, probably also screwy)
-		#phospheneWrite=PhospheneWriteNode(self)
-		#script.addNode(phospheneWrite)
 
 		# Create pre-comp nodes for external annotation scripts
 		annotationsNodes = self._createAnnotationsPreComps()
@@ -783,31 +744,27 @@ class PhospheneNukeShotExporter(ShotgunHieroObjectBase, FnNukeShotExporter.NukeS
 		pass
 	
 #
-# Sequence Writer
+# Sequence Writer (from FNNukeHelpersV2)
 #   if you can believe it, i'm ONLY ADDING A DOT AFTER THE READS
 
-class CustomSequenceScriptWriter(object):
+class CustomSequenceScriptWriter(FnNukeHelpersV2.SequenceScriptWriter):
 	""" Class for writing Sequences to a Nuke script. """
-	def __init__(self, sequence, params):
-		self._sequence = sequence
-		self._params = params
 
-		self._trackWriters = []
-
-	def writeToScript(self,
-						script=nuke.ScriptWriter(),
-						offset=0,
-						skipOffline=True,
-						mediaToSkip=(),
-						disconnected=False,
-						masterTrackItem=None,):
-
-		added_nodes = []
-
-		hiero.core.log.debug( '<'*10 + "Sequence.addToNukeScript()" + '>'*10 )
+	def writeTracks(self,
+				connectedTracks,
+				disconnectedTracks,
+				script,
+				offset,
+				skipOffline,
+				mediaToSkip,
+				projectSettings = None):
+		""" Write a set of tracks, some of which may not be connected to any output.
+		If there are multiple connected these are connected to a Merge node.
+		Returns a jump name for the final output node.
+		"""
+		added_nodes = [] # Note: this used to be returned but isn't needed any more, could be eliminated
 		previousTrack = None
-
-
+	
 		# First write the tracks in reverse order.	When it comes to detemining the inputs for the merges below,
 		# Nuke uses a stack.	We also need to add each track's annotations and soft effects in the right place.
 		# Effects/annotations on a track which also has clips should only apply to that track, so are added before the
@@ -826,49 +783,40 @@ class CustomSequenceScriptWriter(object):
 		#	 Effects 1
 		#	 Merge track 3 over track 2
 		#	 Write
-
+	
 		# If there is an output format specified, to make sure effects and annotations appear in the right place,
 		# they should have their 'cliptype' knob set to 'bbox'.
 		effectsClipType = "bbox"
-
+	
+		# Keep track of the jump set for whatever node the track's output should be. This
+		# is returned and used for joining views
+		outputJumpName = None
+	
 		tracksWithVideo = set()
-
-		# If layout is disconnected, only the 'master' track is connected to the Write node, any others
-		# will be placed in the script but with clips disconnected.	To make this work, connected tracks
-		# needs to be written last, so re-order the list. Effects/annotations which apply to the master track
-		# also need to be connected
-
-		connectedTracks, disconnectedTracks = FnNukeHelpers.getConnectedDisconnectedTracks(self._sequence,
-																																											 masterTrackItem,
-																																											 disconnected,
-																																											 self._params.includeEffects(),
-																																											 self._params.includeAnnotations())
 		tracks = connectedTracks + disconnectedTracks
-
-		readNodeUsageCollator = FnNukeHelpersV2.ReadNodeUsageCollator()
-		readNodeUsageCollator.collateReadNodes(tracks, self._params, offset)
-		readNodes = readNodeUsageCollator.getReadNodes()
-
-		# Keep a record of the last Node in each track, since this will be used later to set the 
+	
+		readNodes = self._readNodeUsageCollator.getReadNodes()
+	
+		# Keep a record of the last Node in each track, since this will be used later to set the
 		# correct connections to Merge nodes
 		lastTrackNodeDict = {}
-
-		# Keep a list of all LifeTime ranges of each track. This is the range Specified by the 
-		# TimeClip nodes first and last knobs. 
+	
+		# Keep a list of all LifeTime ranges of each track. This is the range Specified by the
+		# TimeClip nodes first and last knobs.
 		# We will also need to know the overall comp's start frame, so that we can disable
 		# the Merge node over it's entire range initially
 		lastLifetimeRange = {}
 		firstCompFrame = None
-
+	
 		# Also keep track of Dot nodes created for tidying up the layout of A and
 		# mask inputs, since we will be positioning these after the Merge node gets
 		# its final aplacement
 		maskInputDict = {}
 		AInputDict = {}
-
+	
 		# Keep track of whether all TrackItems are disabled for a track
 		trackDisabled = {}
-
+	
 		# Check all tracks for soft effect tracks
 		hasSoftEffectTracks = False
 		for track in tracks:
@@ -877,8 +825,7 @@ class CustomSequenceScriptWriter(object):
 			if len(trackItems) is 0 and len(subTrackItems) > 0:
 				# Soft effect tracks if track only contains sub track items
 				hasSoftEffectTracks = True
-
-
+	
 		# First write out the tracks and their annotations in reverse order, as described above
 		for track in reversed(tracks):
 			trackDisconnected = track in disconnectedTracks
@@ -887,23 +834,24 @@ class CustomSequenceScriptWriter(object):
 			if len(trackItems) > 0:
 				# Add the track and whether it is disconnected as data to the layout context
 				script.pushLayoutContext("track", track.name(), track=track, disconnected=trackDisconnected)
-
+		
 				# Check if we'll need to add an AddChannels node to each track item in this track
 				addChannelNode = not (track == tracks[0]) and not trackDisconnected and not track.isBlendEnabled()
 				trackWriter = FnNukeHelpersV2.VideoTrackScriptWriter(track, self._params)
-
+		
 				self._trackWriters.append(trackWriter)
-
+		
 				track_nodes = trackWriter.writeToScript(script,
-														offset=offset,
-														skipOffline=skipOffline,
-														mediaToSkip=mediaToSkip,
-														disconnected=trackDisconnected,
-														needToAddChannelNode=addChannelNode,
-														readNodes = readNodes)
-
-				# Traverse the track nodes to find all Timeclip nodes. 
-				# When we find one, use it to define that TrackItem's lifetime. 
+													offset=offset,
+													skipOffline=skipOffline,
+													mediaToSkip=mediaToSkip,
+													disconnected=trackDisconnected,
+													needToAddChannelNode=addChannelNode,
+													readNodes = readNodes,
+													projectSettings = projectSettings)
+	
+				# Traverse the track nodes to find all Timeclip nodes.
+				# When we find one, use it to define that TrackItem's lifetime.
 				# This will later be written to the Merge.
 				for node in track_nodes:
 					if isinstance(node, nuke.TimeClipNode):
@@ -911,53 +859,53 @@ class CustomSequenceScriptWriter(object):
 							lastLifetimeRange[track] = []
 						startFrame = node.knob("first")
 						endFrame = node.knob("last")
-
+			
 						if firstCompFrame is None or startFrame < firstCompFrame:
 							firstCompFrame = startFrame
-
+			
 						#check if the clip is disabled
 						shouldAddLifetime = True
 						if str("disable") in node.knobs():
 							shouldAddLifetime =	not node.knob("disable")
-
+			
 						if shouldAddLifetime:
 							lastLifetimeRange[track].append((startFrame, endFrame))
-
+		
 				added_nodes = added_nodes + track_nodes
-
+		
 				effectsAnnotationsNodes = FnNukeHelpers._addEffectsAnnotationsForTrack(track,
-																						self._params.includeEffects(),
-																						self._params.includeAnnotations(),
-																						script,
-																						offset,
-																						cliptype=effectsClipType)
+																				 self._params.includeEffects(),
+																				 self._params.includeAnnotations(),
+																				 script,
+																				 offset,
+																				 cliptype=effectsClipType)
 				added_nodes.extend( effectsAnnotationsNodes )
-
+	
 				# Check whether every track item is disabled on this track
 				trackDisabled[track] = trackWriter.allTrackItemsDisabled()
-
+		
 				# If all track items are disabled, we should also disable all effects
 				# and annotations nodes
 				if trackDisabled[track]:
 					for node in effectsAnnotationsNodes:
 						node.setKnob("disable", "true")
-
-
-					# Add a constant node to ensure we're always passing channels through.
-					# It's range should be the super-range of all contained clips.
-					firstFrame, lastFrame = 0, 0
-					if track in lastLifetimeRange and len(lastLifetimeRange[track]) > 0:
-						firstFrame, lastFrame = lastLifetimeRange[track][0]
-						for start, end in lastLifetimeRange[track]:
-							if start < firstFrame:
-								firstFrame = start
-							if end > lastFrame:
-								lastFrame = end
-					
-					constant = nuke.ConstantNode(firstFrame, lastFrame, channels="rgb")
-					added_nodes.append(constant)
-					script.addNode(constant)
-
+			
+			
+						# Add a constant node to ensure we're always passing channels through.
+						# It's range should be the super-range of all contained clips.
+						firstFrame, lastFrame = 0, 0
+						if track in lastLifetimeRange and len(lastLifetimeRange[track]) > 0:
+							firstFrame, lastFrame = lastLifetimeRange[track][0]
+							for start, end in lastLifetimeRange[track]:
+								if start < firstFrame:
+									firstFrame = start
+								if end > lastFrame:
+									lastFrame = end
+		
+						constant = nuke.ConstantNode(firstFrame, lastFrame, channels="rgb")
+						added_nodes.append(constant)
+						script.addNode(constant)
+		
 				shouldAddBlackOutside = hasSoftEffectTracks and track.isBlendEnabled() and not trackDisconnected
 				if shouldAddBlackOutside:
 					# We will be merging this track later and we need to make sure we have black outside so that
@@ -965,11 +913,8 @@ class CustomSequenceScriptWriter(object):
 					blackOutside = nuke.Node("BlackOutside")
 					script.addNode(blackOutside)
 					added_nodes.append(blackOutside)
-
+		
 				tracksWithVideo.add(track)
-
-				# Check if we will be adding a merge node here later. If so, this would be the A input and 
-				# we will need a dot node to connect between this and the Merge
 				
 				dot = nuke.DotNode()
 				# Set the dot node's input so we can properly align it after laying out the associated Merge node
@@ -977,80 +922,88 @@ class CustomSequenceScriptWriter(object):
 				dot.setName("DOT_"+track.name())
 				script.addNode(dot)
 				added_nodes.append(dot)
-				
+	
+				# Check if we will be adding a merge node here later. If so, this would be the A input and
+				# we will need a dot node to connect between this and the Merge
 				if track != tracks[0] and not trackDisconnected:
-
-					# If the next item will be a Merge node, and blendMask is enabled, 
-					# we'll need a set and push here, as well as additional Dot nodes 
+					dot = nuke.DotNode()
+					# Set the dot node's input so we can properly align it after laying out the associated Merge node
+					dot.setInputNode(0, added_nodes[-1])
+					script.addNode(dot)
+					added_nodes.append(dot)
+		
+					# If the next item will be a Merge node, and blendMask is enabled,
+					# we'll need a set and push here, as well as additional Dot nodes
 					# to join everything up nicely.
-					if track.isBlendMaskEnabled(): 
+					if track.isBlendMaskEnabled():
 						# Add a dot for the mask input
 						dotA = nuke.DotNode()
 						script.addNode(dotA)
 						added_nodes.append(dotA)
-
+			
 						AInputDict[track] = dotA
-
-						# Construct a unique label for the set/push. 
+			
+						# Construct a unique label for the set/push.
 						commandLabel = "Mask_" + str(tracks.index(track))
-
+			
 						# Add the set command
 						setCommand = nuke.SetNode(commandLabel, 0)
 						script.addNode(setCommand)
 						added_nodes.append(setCommand)
-
+			
 						# Add a dot command to bring together the A and mask inputs
 						dotMask = nuke.DotNode()
 						script.addNode(dotMask)
 						added_nodes.append(dotMask)
-
+			
 						#Add a set command so that we can back to this dot for the merge mask input
 						dotMaskSetNode = nuke.SetNode(trackWriter.getMaskJumpName(), 0)
 						script.addNode(dotMaskSetNode)
 						added_nodes.append(dotMaskSetNode)
-
+			
 						maskInputDict[track] = dotMask
-
+			
 						# Add the push command
 						pushCommand = nuke.PushNode(commandLabel)
 						script.addNode(pushCommand)
 						added_nodes.append(pushCommand)
-
+			
 						lastTrackNodeDict[track] = dot
-
+		
 				# Add a set node to the end of the track
 				setNode = nuke.SetNode(trackWriter.getJumpName(), 0)
+				outputJumpName = trackWriter.getJumpName()
 				added_nodes.append(setNode)
 				script.addNode(setNode)
-
+		
 				script.popLayoutContext()
-
+	
 			elif trackDisconnected:
 				script.pushLayoutContext("track", track.name(), track=track, disconnected=trackDisconnected)
-
+		
 				added_nodes.extend( FnNukeHelpers._addEffectsAnnotationsForTrack(track,
-																					self._params.includeEffects(),
-																					self._params.includeAnnotations(),
-																					script,
-																					offset,
-																					inputs=0,
-																					cliptype=effectsClipType) )
+																				 self._params.includeEffects(),
+																				 self._params.includeAnnotations(),
+																				 script,
+																				 offset,
+																				 inputs=0,
+																				 cliptype=effectsClipType) )
 				script.popLayoutContext()
-
-
+	
+	
 			# Store the last node added to this track
 			if not track in lastTrackNodeDict and len(added_nodes) > 0:
 				# Get the last non-tcl command Node added
 				for node in reversed(added_nodes):
 					lastTrackNodeDict[track] = node
-					if node.isNode(): 
+					if node.isNode():
 						break
-
+	
 		# Now iterate over the tracks in order, writing merges and their soft effects
 		previousTrack = None
 		for track in tracks:
 			trackDisconnected = track in disconnectedTracks
-
+	
 			if not trackDisconnected and previousTrack:
 				# We need a merge if this track contains any clips
 				if track in tracksWithVideo:
@@ -1058,48 +1011,48 @@ class CustomSequenceScriptWriter(object):
 					if track.isBlendEnabled():
 						blendMode = track.blendMode()
 						merge.setKnob('operation', blendMode )
-
+			
 						# For a blend track, use 'All' for metadata which means the B input
 						# is copied over A
 						merge.setKnob('metainput', 'All')
-
+			
 						# For blend track, we want to output the bbox to be the union of A and B
 						merge.setKnob('bbox', 'union')
-
+			
 						# will this node need to connect to its mask input to its A input?
 						if track.isBlendMaskEnabled():
 							# The correct command in the nuke script should be:
-							#		inputs 2+1
-							# However we need to use quotes here to stop the 2nd parameter being 
+							#	inputs 2+1
+							# However we need to use quotes here to stop the 2nd parameter being
 							# evaluated as 3. This will be special cased in the Script contruction
 							# later.
 							merge.setKnob("inputs", "2+1")
 							merge.setDotInputs(AInputDict[track], maskInputDict[track])
-
+		
 					else:
 						# For non-blend track, we want to output the metadata from the A input
 						merge.setKnob('metainput', 'A')
-
+			
 						# For non-blend track, we want to output the bbox from the A input
 						merge.setKnob('bbox', 'A')
-
+			
 						# This Merge node should use the custom alpha channel created on the A input track
 						merge.setKnob('Achannels', '{rgba.red rgba.green rgba.blue Track_Alpha.a}')
 					if previousTrack:
 						merge.setKnob( 'label', track.name()+' over '+previousTrack.name() )
-
-
+			
+			
 						# Set the Merge's inputs, so we can use them to properly position the Merge later.
 						if track in lastTrackNodeDict:
 							merge.setInputNode(0, lastTrackNodeDict[track])
 						if previousTrack in lastTrackNodeDict:
 							merge.setInputNode(1, lastTrackNodeDict[previousTrack])
-
+			
 						# Any subsequent Merges will be connected to this one, so update the last Node in the track.
-						lastTrackNodeDict[track] = merge					
+						lastTrackNodeDict[track] = merge
 					else:
 						merge.setKnob( 'label', track.name() )
-
+		
 					# If all items from the track are disabled, also fully disable the Merge Node
 					if track in trackDisabled and trackDisabled[track] == True:
 						merge.setKnob("disable", "true")
@@ -1107,9 +1060,9 @@ class CustomSequenceScriptWriter(object):
 						# Animate the Merge node's disable knob over each lifetime on the track
 						for start, end in lastLifetimeRange[track]:
 							merge.addEnabledRange(start, end, firstCompFrame)
-
+		
 					script.pushLayoutContext("merge", "Merge " + previousTrack.name() + " " + track.name(), track=previousTrack, inputA=track, inputB=previousTrack)
-
+		
 					inputAWriter = None
 					inputBWriter = None
 					for writer in self._trackWriters:
@@ -1117,52 +1070,53 @@ class CustomSequenceScriptWriter(object):
 							inputAWriter = writer
 						if writer._track == previousTrack:
 							inputBWriter = writer
-
+		
 					#Add pushes for inputs
 					if track.isBlendMaskEnabled():
 						# Push for the mask input
 						pushMaskNode = nuke.PushNode(inputAWriter.getMaskJumpName())
 						added_nodes.append(pushMaskNode)
 						script.addNode(pushMaskNode)
-
+		
 					pushANode = nuke.PushNode(inputAWriter.getJumpName())
 					added_nodes.append(pushANode)
 					script.addNode(pushANode)
-
+		
 					pushBNode = nuke.PushNode(inputBWriter.getJumpName())
 					added_nodes.append(pushBNode)
 					script.addNode(pushBNode)
-
+		
 					script.addNode(merge)
 					added_nodes.append(merge)
-
+		
 					#Add a set for the merge because this merge should replace the track
 					mergeJumpName = inputAWriter.getJumpName() + "Merge"
 					mergeSetNode = nuke.SetNode(mergeJumpName, 0)
 					added_nodes.append(mergeSetNode)
 					script.addNode(mergeSetNode)
 					inputAWriter.setJumpName(mergeJumpName)
-
+					outputJumpName = mergeJumpName
+		
 					script.popLayoutContext()
 				# If there were no clips on the track, write the effects and annotations after the merge so they get applied to the tracks below
 				else:
 					script.pushLayoutContext("effectsTrack", track.name(), track=track, disconnected=trackDisconnected)
-
+		
 					effectInputs = 1
 					if trackDisconnected:
 						effectInputs = 0
-
+		
 					extendedNodes = FnNukeHelpers._addEffectsAnnotationsForTrack(track,
-																					self._params.includeEffects(),
-																					self._params.includeAnnotations(),
-																					script,
-																					offset,
-																					inputs=effectInputs,
-																					cliptype=effectsClipType)
-
+																					 self._params.includeEffects(),
+																					 self._params.includeAnnotations(),
+																					 script,
+																					 offset,
+																					 inputs=effectInputs,
+																					 cliptype=effectsClipType)
+		
 					if extendedNodes:
 						added_nodes.extend( extendedNodes )
-
+		
 						# We need to make sure that effects and annotations are aligned under the main comp branch
 						if previousTrack and previousTrack in lastTrackNodeDict:
 							previousNode = None
@@ -1172,29 +1126,23 @@ class CustomSequenceScriptWriter(object):
 								else:
 									inputNode = previousNode
 									lastTrackNodeDict[track] = node
-								
+			
 								node.setInputNode(0, inputNode)
 								previousNode = node
-
+		
 					# Add the effects jump
 					effectsJump = FnNukeHelpersV2.EffectsTrackJump(track)
 					effectsSetNode = nuke.SetNode(effectsJump.getJumpName(), 0)
 					added_nodes.append(effectsSetNode)
 					script.addNode(effectsSetNode)
 					self._trackWriters.append(effectsJump)
-
+					outputJumpName = effectsJump.getJumpName()
+		
 					script.popLayoutContext() # effectsTrack
-
+		
 			previousTrack = track
+		return outputJumpName
 
-		# Add any additional nodes.
-		perSequenceNodes = self._params.doAdditionalNodesCallback(self._sequence)
-		for node in perSequenceNodes:
-			if node is not None:
-				added_nodes.append(node)
-				script.addNode(node)
-
-		return added_nodes
 	
 #
 #
@@ -1310,7 +1258,7 @@ class CustomTrackItemScriptWriter(FnNukeHelpersV2.TrackItemScriptWriter):
 		if seq:
 			seqTimecodeStart = seq.timecodeStart()
 			seqTimecodeFrame = seqTimecodeStart + self._trackItem.timelineIn() - self._outputStartHandle
-			seqTimecode = hiero.core.Timecode.timeToString(seqTimecodeFrame, seq.framerate(), hiero.core.Timecode.kDisplayTimecode)
+			seqTimecode = hiero.core.Timecode.timeToString(seqTimecodeFrame, seq.framerate(), hiero.core.Timecode.kDisplayTimecode) #@UndefinedVariable
 
 			metadataNode.addMetadata( [ ("hiero/project", clip.project().name() ),
 										("hiero/sequence/frame_rate", seq.framerate() ),
@@ -1471,48 +1419,48 @@ class CustomTrackItemScriptWriter(FnNukeHelpersV2.TrackItemScriptWriter):
 		return added_nodes
 	
 #
-#
+# from FnNukeHelpers
 #
 # Here we are, nearly 5 classes/functions down the tree, and we are finally where read nodes are made
 
 def _Custom_Clip_addToNukeScript(self,
-							script,
-							additionalNodes=None,
-							additionalNodesCallback=None,
-							firstFrame=None,
-							trimmed=True,
-							trimStart=None,
-							trimEnd=None,
-							colourTransform=None,
-							metadataNode=None,
-							includeMetadataNode=True,
-							nodeLabel=None,
-							enabled=True,
-							includeEffects=True,
-							beforeBehaviour=None,
-							afterBehaviour=None,
-							project = None,
-							readNodes = {},
-							trackName = None):
+                          script,
+                          additionalNodes=None,
+                          additionalNodesCallback=None,
+                          firstFrame=None,
+                          trimmed=True,
+                          trimStart=None,
+                          trimEnd=None,
+                          colourTransform=None,
+                          metadataNode=None,
+                          includeMetadataNode=True,
+                          nodeLabel=None,
+                          enabled=True,
+                          includeEffects=True,
+                          beforeBehaviour=None,
+                          afterBehaviour=None,
+                          project = None,
+                          readNodes = {},
+                          trackName = None):
 	"""addToNukeScript(self, script, trimmed=True, trimStart=None, trimEnd=None)
 
-		Add a Read node to the Nuke script for each media sequence/file used in this clip. If there is no media, nothing is added.
+	Add a Read node to the Nuke script for each media sequence/file used in this clip. If there is no media, nothing is added.
 
-		@param script: Nuke script object to add nodes
-		@param additionalNodes: List of nodes to be added post read
-		@param additionalNodesCallback: callback to allow custom additional node per item function([Clip|TrackItem|Track|Sequence])
-		@param firstFrame: Custom offset to move start frame of clip
-		@param trimmed: If True, a TimeClip node will be added to trim the range output by the Read node. The range defaults to the clip's soft trim range. If soft trims are not enabled on the clip, the range defaults to the clip range. The range can be overridden by passing trimStart and/or trimEnd values.
-		@param trimStart: Override the trim range start with this value.
-		@param trimEnd: Override the trim range end with this value.
-		@param colourTransform: if specified, is set as the color transform for the clip
-		@param metadataNode: node containing metadata to be inserted into the script
-		@param includeMetadataNode: specifies whether a metadata node should be added to the script
-		@param nodeLabel: optional label for the Read node
-		@param enabled: enabled status of the read node. True by default
-		@param includeEffects: if True, soft effects in the clip are included
-		@param beforeBehaviour: What to do for frames before the first ([hold|loop|bounce|black])
-		@param afterBehaviour: What to do for frames after the last ([hold|loop|bounce|black]) 
+	@param script: Nuke script object to add nodes
+	@param additionalNodes: List of nodes to be added post read
+	@param additionalNodesCallback: callback to allow custom additional node per item function([Clip|TrackItem|Track|Sequence])
+	@param firstFrame: Custom offset to move start frame of clip
+	@param trimmed: If True, a TimeClip node will be added to trim the range output by the Read node. The range defaults to the clip's soft trim range. If soft trims are not enabled on the clip, the range defaults to the clip range. The range can be overridden by passing trimStart and/or trimEnd values.
+	@param trimStart: Override the trim range start with this value.
+	@param trimEnd: Override the trim range end with this value.
+	@param colourTransform: if specified, is set as the color transform for the clip
+	@param metadataNode: node containing metadata to be inserted into the script
+	@param includeMetadataNode: specifies whether a metadata node should be added to the script
+	@param nodeLabel: optional label for the Read node
+	@param enabled: enabled status of the read node. True by default
+	@param includeEffects: if True, soft effects in the clip are included
+	@param beforeBehaviour: What to do for frames before the first ([hold|loop|bounce|black])
+	@param afterBehaviour: What to do for frames after the last ([hold|loop|bounce|black])
 		@param trackName: name of the source track for the read node (for labeleing)
 	"""
 
@@ -1529,216 +1477,223 @@ def _Custom_Clip_addToNukeScript(self,
 		# For now just do nothing
 		return added_nodes
 
-	# MPLEC TODO
-	# Currently, on ingest only one source media element is added to the Clip timeline.
-	# However it is possible for the Clip timeline to contain multiple track items.
-	# We don't currently allow other source media to be added (though stereo will do this)
-	# but users can cut/trim/etc on the one that's there so this needs to be smarter.
-	# It will need to do the same thing as the timeline build-out does, with multiple
-	# tracks, AppendClips, gap filling -- the whole routine. Should be able to share that?
-	for fi in source.fileinfos():
+	# Get start frame. First frame of an image sequence. Zero if quicktime/r3d
+	startFrame = self.sourceIn()
+	hiero.core.log.debug( "startFrame: " + str(startFrame) )
 
-		# Get start frame. First frame of an image sequence. Zero if quicktime/r3d
-		startFrame = self.sourceIn()
-		hiero.core.log.debug( "startFrame: " + str(startFrame) )
+	start, end = FnNukeHelpers._Clip_getStartEndFrames(self, firstFrame, trimmed, trimStart, trimEnd)
 
-		start, end = FnNukeHelpers._Clip_getStartEndFrames(self, firstFrame, trimmed, trimStart, trimEnd)
+	# Grab clip format
+	format = self.format()
 
-		# Grab clip format
-		format = self.format()
-		clipMetadata = self.metadata()
+	isRead = False
+	isPostageStamp = False
 
-		hiero.core.log.debug( "- adding Nuke node for:%s %s %s", fi.filename(), start, end )
-		isRead = False
-		isPostageStamp = False
+	readFilename = FnNukeHelpers._Clip_getFilePath(self)
 
-		readFilename = fi.filename()
+	hiero.core.log.debug( "- adding Nuke node for:%s %s %s", readFilename, start, end )
 
-		# When writing a clip which points to an nk script, we can't just add a Read
-		# node with the nk as path.
-		# For an nk clip, try to find the metadata for the write path, and use that
-		# in the Read node.	This should be present, it's set by nkReader.	If it's
-		# not, CompSourceInfo will throw an exception, fall back to using a Precomp
-		# just in case
-		try:
-			compInfo = FnNukeHelpers.CompSourceInfo(self)
-			if compInfo.isComp():
-				# Change the readFilename to point to the nk script render path
-				readFilename = compInfo.writePath
-		except RuntimeError:
-			if isNukeScript(readFilename):
-				# Create a Precomp node and reset readFilename to prevent a Read node
-				# being created below
-				readFilename = None
-				read_node = nuke.PrecompNode( fi.filename() )
+	# When writing a clip which points to an nk script, we can't just add a Read
+	# node with the nk as path.
+	# For an nk clip, try to find the metadata for the write path, and use that
+	# in the Read node.	This should be present, it's set by nkReader.	If it's
+	# not, CompSourceInfo will throw an exception, fall back to using a Precomp
+	# just in case
+	try:
+		compInfo = CompSourceInfo(self)
+		if compInfo.isComp():
+			# Change the readFilename to point to the nk script render path
+			readFilename = compInfo.unexpandedWritePath
+	except RuntimeError:
+		if isNukeScript(readFilename):
+			# Create a Precomp node and reset readFilename to prevent a Read node
+			# being created below
+			read_node = nuke.PrecompNode( readFilename )
+			readFilename = None
 
-		# If there is a read filename, create a Read node
-		if readFilename:
-			# First check if we want to create a PostageStamp or Read node
-			readInfoKey = FnNukeHelpers._Clip_readInfoKey(self, readFilename)
-			if enabled and readInfoKey in readNodes:
-				readInfo = readNodes[readInfoKey]
+	# If there is a read filename, create a Read node
+	if readFilename:
+		# First check if we want to create a PostageStamp or Read node
+		readInfoKey = FnNukeHelpers._Clip_readInfoKey(self, readFilename)
+		if enabled and readInfoKey in readNodes:
+			readInfo = readNodes[readInfoKey]
 
-				# Increment the usage
-				readInfo.instancesUsed += 1
-			else:
-				readInfo = None
-
-			# Only create a Read Node if this is the only usage of this filename, or this 
-			# is the last usage
-			isPostageStamp = readInfo is not None and readInfo.instancesUsed < readInfo.totalInstances
-
-			if isPostageStamp:
-				# We will need a push command to connect it its Read Node
-				pushCommandID = readInfo.readNodeID + "_" + str(readInfo.totalInstances)
-				pushCommand = nuke.PushNode(pushCommandID)
-				if script is not None:
-					script.addNode(pushCommand)
-				added_nodes.append(pushCommand)
-
-				read_node = nuke.PostageStampNode()
-			else:
-				read_node = nuke.ReadNode(readFilename,
-											format.width(),
-											format.height(),
-											format.pixelAspect(),
-											round(start),
-											round(end),
-											clipMetadata=clipMetadata)
-				#FINALLY!
-				#name the read node
-				if trackName:
-					read_node.setName(str(trackName))
-				
-				read_node.setKnob("localizationPolicy", FnNukeHelpers.localisationMap[self.localizationPolicy()] )
-
-				if firstFrame is not None:
-					read_node.setKnob("frame_mode", 'start at')
-					read_node.setKnob("frame", firstFrame)
-				
-				if beforeBehaviour is not None:
-					read_node.setKnob("before", beforeBehaviour)
-				if afterBehaviour is not None:
-					read_node.setKnob("after", afterBehaviour)
-
-				# Add the knobs from the clip's own Read node
-				FnNukeHelpers._Clip_addReadNodeKnobs(self, read_node)
-
-				isRead = True
-
-
-		# If a node name has been specified
-		if nodeLabel is not None:
-			read_node.setKnob("label", nodeLabel)
-
-		if script is not None:
-			script.addNode(read_node)
-		added_nodes.append(read_node)
-
-		if readInfo:
-			if isRead:
-				# We'll need a set and a push command, so that the script can be reordered later to put all 
-				# the Read and associated Set commands to the top. The Push commands will stay 
-				# where they are so that Nodes will connect up properly afterwards
-				if enabled:
-					setCommandID = readInfo.readNodeID + "_" + str(readInfo.totalInstances)
-				else:
-					setCommandID = readInfo.readNodeID + "_disabled"
-
-				setCommand = nuke.SetNode(setCommandID, 0)
-				pushCommand = nuke.PushNode(setCommandID)
-				if script is not None:
-					script.addNode(setCommand)
-					script.addNode(pushCommand)
-				added_nodes.append(setCommand)
-				added_nodes.append(pushCommand)
-			elif isPostageStamp:
-				# If it's a postage stamp node, we'll also need a time offset to correct the Frame Range
-				# relative to the original read
-				originalFirstFrame = readInfo.startAt
-				if originalFirstFrame is not None:
-					# There's a slight difference between how frame ranges are handled by Read Nodes
-					# and TimeOffset's in Nuke, and the information we pass.
-					# Ideally, the Timeoffset would work entirely in floating point, but it, and its interface,
-					# don't. We have added the dtime_offset as a workaround for this, but there's an additional
-					# problem that the Read Node's original range (originalFirstFrame here) gets cast to int
-					# before getting through to Timeoffset.
-					# This means that Timeoffset cannot properly process the range because the fractional part
-					# of originalFirstFrame has already been lost. We compensate for that here, by adding the 
-					# fractional part to the Timeoffset value.
-					fractpart, intpart = math.modf(originalFirstFrame)
-					if fractpart is None:
-						fractpart = 0
-					timeOffset = nuke.TimeOffsetNode(firstFrame - originalFirstFrame + fractpart)
-					if script is not None:
-						script.addNode(timeOffset)
-					added_nodes.append(timeOffset)
-
-		if not isRead and not isPostageStamp and firstFrame is not None:
-
-			timeClip = nuke.TimeClipNode( round(start), round(end), start, end, round(firstFrame) )
-			added_nodes.append( timeClip )
-
-		if not enabled:
-			read_node.setKnob("disable", True)
-
-		if includeMetadataNode:
-			if metadataNode is None:
-				metadataNode = nuke.MetadataNode()
-				if script is not None:
-					script.addNode(metadataNode)
-				added_nodes.append(metadataNode)
-				metadataNode.setInputNode(0, read_node)
-
-			metadataNode.addMetadata([("hiero/clip", self.name())])
-			# Also set the reel name (if any) on the metadata key the dpx writer expects for this.
-			if Keys.kSourceReelId in clipMetadata:
-				reel = clipMetadata[Keys.kSourceReelId]
-				if len(reel):
-					metadataNode.addMetadata( [ ("hiero/reel", reel), ('dpx/input_device', reel), ('quicktime/reel', reel) ] )
-
-			# Add Tags to metadata
-			metadataNode.addMetadataFromTags( self.tags() )
-
-		if includeEffects:
-			# Add clip internal soft effects
-			# We need to offset the frame range of the effects from clip time into the output time.
-			if firstFrame is not None:
-				effectOffset = firstFrame + startFrame - start
-			else:
-				effectOffset = startFrame
-
-			effects = [ item for item in itertools.chain( *itertools.chain(*self.subTrackItems()) ) if isinstance(item, EffectTrackItem) ]
-			hiero.core.log.info("Clip.addToNukeScript effects %s %s" % (effects, self.subTrackItems()))
-			for effect in reversed(effects):
-				added_nodes.extend( effect.addToNukeScript(script, effectOffset) )
-
-		postReadNodes = []
-		if callable(additionalNodesCallback):
-			postReadNodes.extend(additionalNodesCallback(self))
-
-		if additionalNodes is not None:
-			postReadNodes.extend(additionalNodes)
-
-		if includeMetadataNode:
-			prevNode = metadataNode
+			# Increment the usage
+			readInfo.instancesUsed += 1
 		else:
-			prevNode = read_node
+			readInfo = None
 
-		for node in postReadNodes:
-			# Add additional nodes
-			if node is not None:
-				node = copy.deepcopy(node)
-				node.setInputNode(0, prevNode)
-				prevNode = node
+		# Only create a Read Node if this is the only usage of this filename, or this
+		# is the last usage
+		isPostageStamp = readInfo is not None and readInfo.instancesUsed < readInfo.totalInstances
 
-				# Disable additional nodes too
-				if not enabled:
-					node.setKnob("disable", "true")
+		if isPostageStamp:
+			# We will need a push command to connect it its Read Node
+			pushCommandID = readInfo.readNodeID + "_" + str(readInfo.totalInstances)
+			pushCommand = nuke.PushNode(pushCommandID)
+			if script is not None:
+				script.addNode(pushCommand)
+			added_nodes.append(pushCommand)
 
-				added_nodes.append(node)
+			read_node = nuke.PostageStampNode()
+		else:
+			read_node = nuke.ReadNode(readFilename,
+																format.width(),
+																format.height(),
+																format.pixelAspect(),
+																round(start),
+																round(end),)
+			
+			#FINALLY!
+			#name the read node
+			if trackName:
+				read_node.setName(str(trackName))
+					
+			read_node.setKnob("localizationPolicy", FnNukeHelpers.localisationMap[self.localizationPolicy()] )
+
+			if firstFrame is not None:
+				read_node.setKnob("frame_mode", 'start at')
+				read_node.setKnob("frame", firstFrame)
+
+			if beforeBehaviour is not None:
+				read_node.setKnob("before", beforeBehaviour)
+			if afterBehaviour is not None:
+				read_node.setKnob("after", afterBehaviour)
+
+			# Add the knobs from the clip's own Read node
+			FnNukeHelpers._Clip_addReadNodeKnobs(self, read_node)
+
+			# If the colourTransform was specified, set the 'colorspace' knob to it,
+			# overriding any settings from the Read node
+			if colourTransform:
+				read_node.setKnob('colorspace', colourTransform)
+
+			# Set the color the node appears in the DAG. In Studio this is currently
+			# stored on the parent bin item. The script format for the color is in the
+			# form 0xrrggbbaa
+			binItem = self.binItem()
+			if binItem and binItem.displayColor().isValid():
+				rgba = binItem.displayColor().getRgb() # Get tuple of rgba components
+				colorString = "0x" + "".join("%02x" % i for i in rgba)
+				read_node.setKnob("tile_color", colorString)
+
+			isRead = True
+
+
+
+	# If a node name has been specified
+	if nodeLabel is not None:
+		read_node.setKnob("label", nodeLabel)
+
+	if script is not None:
+		script.addNode(read_node)
+	added_nodes.append(read_node)
+
+	if readInfo:
+		if isRead:
+			# We'll need a set and a push command, so that the script can be reordered later to put all
+			# the Read and associated Set commands to the top. The Push commands will stay
+			# where they are so that Nodes will connect up properly afterwards
+			if enabled:
+				setCommandID = readInfo.readNodeID + "_" + str(readInfo.totalInstances)
+			else:
+				setCommandID = readInfo.readNodeID + "_disabled"
+
+			setCommand = nuke.SetNode(setCommandID, 0)
+			pushCommand = nuke.PushNode(setCommandID)
+			if script is not None:
+				script.addNode(setCommand)
+				script.addNode(pushCommand)
+			added_nodes.append(setCommand)
+			added_nodes.append(pushCommand)
+		elif isPostageStamp:
+			# If it's a postage stamp node, we'll also need a time offset to correct the Frame Range
+			# relative to the original read
+			originalFirstFrame = readInfo.startAt
+			if originalFirstFrame is not None:
+				# There's a slight difference between how frame ranges are handled by Read Nodes
+				# and TimeOffset's in Nuke, and the information we pass.
+				# Ideally, the Timeoffset would work entirely in floating point, but it, and its interface,
+				# don't. We have added the dtime_offset as a workaround for this, but there's an additional
+				# problem that the Read Node's original range (originalFirstFrame here) gets cast to int
+				# before getting through to Timeoffset.
+				# This means that Timeoffset cannot properly process the range because the fractional part
+				# of originalFirstFrame has already been lost. We compensate for that here, by adding the
+				# fractional part to the Timeoffset value.
+				fractpart, intpart = math.modf(originalFirstFrame)
+				if fractpart is None:
+					fractpart = 0
+				timeOffset = nuke.TimeOffsetNode(firstFrame - originalFirstFrame + fractpart)
 				if script is not None:
-					script.addNode(node)
+					script.addNode(timeOffset)
+				added_nodes.append(timeOffset)
+
+	if not isRead and not isPostageStamp and firstFrame is not None:
+
+		timeClip = nuke.TimeClipNode( round(start), round(end), start, end, round(firstFrame) )
+		added_nodes.append( timeClip )
+
+	if not enabled:
+		read_node.setKnob("disable", True)
+
+	if includeMetadataNode:
+		if metadataNode is None:
+			metadataNode = nuke.MetadataNode()
+			if script is not None:
+				script.addNode(metadataNode)
+			added_nodes.append(metadataNode)
+			metadataNode.setInputNode(0, read_node)
+
+		metadataNode.addMetadata([("hiero/clip", self.name())])
+		# Also set the reel name (if any) on the metadata key the dpx writer expects for this.
+		clipMetadata = self.metadata()
+		if Keys.kSourceReelId in clipMetadata:
+			reel = clipMetadata[Keys.kSourceReelId]
+			if len(reel):
+				metadataNode.addMetadata( [ ("hiero/reel", reel), ('dpx/input_device', reel), ('quicktime/reel', reel) ] )
+
+		# Add Tags to metadata
+		metadataNode.addMetadataFromTags( self.tags() )
+
+	if includeEffects:
+		# Add clip internal soft effects
+		# We need to offset the frame range of the effects from clip time into the output time.
+		if firstFrame is not None:
+			effectOffset = firstFrame + startFrame - start
+		else:
+			effectOffset = startFrame
+
+		effects = [ item for item in itertools.chain( *itertools.chain(*self.subTrackItems()) ) if isinstance(item, hiero.core.EffectTrackItem) ] #@UndefinedVariable
+		hiero.core.log.info("Clip.addToNukeScript effects %s %s" % (effects, self.subTrackItems()))
+		for effect in reversed(effects):
+			added_nodes.extend( effect.addToNukeScript(script, effectOffset) )
+
+	postReadNodes = []
+	if callable(additionalNodesCallback):
+		postReadNodes.extend(additionalNodesCallback(self))
+
+	if additionalNodes is not None:
+		postReadNodes.extend(additionalNodes)
+
+	if includeMetadataNode:
+		prevNode = metadataNode
+	else:
+		prevNode = read_node
+
+	for node in postReadNodes:
+		# Add additional nodes
+		if node is not None:
+			node = copy.deepcopy(node)
+			node.setInputNode(0, prevNode)
+			prevNode = node
+
+			# Disable additional nodes too
+			if not enabled:
+				node.setKnob("disable", "true")
+
+			added_nodes.append(node)
+			if script is not None:
+				script.addNode(node)
 
 	return added_nodes
 
